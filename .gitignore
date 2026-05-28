@@ -1,0 +1,23 @@
+# 构建产物
+build/
+compile_commands.json
+
+# IDE
+.vscode/
+.cache/
+.clangd
+.clangd/
+.claude/
+
+# 编译输出
+*.exe
+*.obj
+*.o
+
+# 数据文件
+data/
+
+# 临时文件
+*.tmp
+*.swp
+*~
