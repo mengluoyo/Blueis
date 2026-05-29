@@ -1,6 +1,8 @@
 #include <iostream>
 #include "server.h"
 #include "../protocol/command_parser.h"
+#include "../protocol/resp_parser.h"
+#include "../protocol/resp_writer.h"
 #include "../sql/lexer.h"
 #include "../sql/parser.h"
 #include "../sql/executor.h"
@@ -225,10 +227,6 @@ static int filter_telnet(SOCKET sock, char* buf, int len) {
 }
 
 void TcpServer::handle_client(SOCKET client_socket) {
-    // 发送欢迎信息
-    const char* welcome = "Blueis v0.1.0\r\nType your command:\r\n";
-    send(client_socket, welcome, static_cast<int>(strlen(welcome)), 0);
-
     char buffer[4096];
     std::string sql_buf;    // 完整的sql语句
     std::string line_buf;   // 每行字符
@@ -237,6 +235,7 @@ void TcpServer::handle_client(SOCKET client_socket) {
     std::vector<std::string> vLineStr;  // 存储各行字符
     std::string last_line;  // 最后一行暂未被存储的字符
     bool in_esc = false;    // 处于方向键编辑状态
+    bool welcomed = false;  // 是否已发送欢迎信息
     string esc_buf;         // 存储方向键字符
 
     while (m_running) {
@@ -245,9 +244,36 @@ void TcpServer::handle_client(SOCKET client_socket) {
             break;
         }
 
+        // RESP 协议检测：首字节为 '*' 表示 redis-cli 发来的命令
+        if (buffer[0] == '*') {
+            RespParser resp_parser;
+            Command cmd = resp_parser.parse(buffer, received);
+
+            // 从 tokens 重建原始命令字符串（如 "set key value"）
+            std::string raw;
+            for (size_t i = 0; i < cmd.tokens.size(); ++i) {
+                if (i > 0) raw += " ";
+                raw += cmd.tokens[i];
+            }
+
+            std::string response = process_command(raw);
+            RespWriter resp_writer;
+            std::string resp_data = resp_writer.to_resp(response);
+            send(client_socket, resp_data.c_str(),
+                 static_cast<int>(resp_data.size()), 0);
+            continue;
+        }
+
         // 过滤 telnet 协商字节
         received = filter_telnet(client_socket, buffer, received);
         if (received <= 0) continue;
+
+        // telnet 模式：首次连接发送欢迎信息
+        if (!welcomed) {
+            const char* welcome = "Blueis v1.0.0\r\nType your command:\r\n";
+            send(client_socket, welcome, static_cast<int>(strlen(welcome)), 0);
+            welcomed = true;
+        }
 
         std::string data(buffer, received);
 

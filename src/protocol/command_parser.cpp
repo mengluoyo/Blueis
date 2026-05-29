@@ -1,7 +1,6 @@
 #include "command_parser.h"
 #include <algorithm>
 #include <cctype>
-#include <sstream>
 #include <unordered_set>
 
 namespace blueis {
