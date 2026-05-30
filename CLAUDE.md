@@ -8,10 +8,11 @@ Blueis — 仿 Redis 的轻量级内存缓存数据库，C++17，Windows/MinGW�
 - Phase 1: TCP Server + String 命令（SET/GET/DEL/EXISTS/KEYS）
 - Phase 2: 完整 SQL 引擎（CREATE TABLE / INSERT / SELECT / UPDATE / DELETE / DROP TABLE / SHOW TABLES）
 - Phase 3: Hash 命令（HSET/HGET/HDEL/HEXISTS/HGETALL/HKEYS）
-- Phase 4: JSON 快照持久化（SAVE + 启动加载 + 关闭保存）+ 终端行编辑
+- Phase 4: 终端行编辑（方向键、多行输入、全行重绘）
 - Phase 5: RESP 协议兼容（RespParser + RespWriter, redis-cli 可直接连接）
+- Phase 6: AOF 持久化（Append-Only File, 启动重放, SAVE 触发 rewrite）
 
-**待实现**：AOF 持久化 → 过期机制 → 内存管理 → IO 多路复用 → 主从复制 → 哨兵/集群
+**待实现**：过期机制 → 内存管理 → IO 多路复用 → 主从复制 → 哨兵/集群
 详见 [需求文档_v1.0.md](需求文档_v1.0.md)
 
 ## 核心目录结构
@@ -23,7 +24,7 @@ Blueis — 仿 Redis 的轻量级内存缓存数据库，C++17，Windows/MinGW�
 ├── src/protocol/             # 协议层: CommandParser(文本) + RespParser/RESP Writer(RESP)
 ├── src/sql/                  # SQL 引擎: Lexer → Parser → AST → Executor → Formatter
 ├── src/storage/              # 存储引擎 (单例, shared_mutex, String + Hash + 表/行)
-├── src/persistence/          # JSON 快照持久化 (自建轻量解析器)
+├── src/persistence/          # AOF 持久化 (命令日志追加 + rewrite)
 └── build/                    # CMake 构建产物
 ```
 
@@ -41,4 +42,4 @@ cmake --build build
 telnet 127.0.0.1 6380
 ```
 
-注意事项: `<windows.h>` 污染 `ERROR` 宏，标准库头文件必须放在它之前；clangd 需配 `--target=x86_64-w64-mingw32` 才能解析 GCC 头文件。数据文件 `data/blueis.json` 在运行目录下自动创建。
+注意事项: `<windows.h>` 污染 `ERROR` 宏，标准库头文件必须放在它之前；clangd 需配 `--target=x86_64-w64-mingw32` 才能解析 GCC 头文件。数据文件 `data/blueis.aof` 在运行目录下自动创建。

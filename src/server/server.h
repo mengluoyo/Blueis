@@ -41,7 +41,7 @@ public:
 
 private:
     void handle_client(SOCKET client_socket);
-    std::string process_command(const std::string& raw);
+    std::string process_command(const std::string& raw, bool record_aof = true);
     std::string execute_redis(const class Command& cmd);
     std::string execute_sql(const class Command& cmd);
 

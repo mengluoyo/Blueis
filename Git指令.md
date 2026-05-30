@@ -33,8 +33,9 @@ git branch                    # 列出本地所有分支，当前分支带 * 号
 git branch -a                 # 列出所有分支（含远程）
 git checkout -b feature/xxx   # 创建新分支并切换过去
 git checkout master           # 切换到 master 分支
-git branch -d feature/xxx     # 删除已合并的分支
-git branch -D feature/xxx     # 强制删除分支（没合并也删）
+git branch -d feature/xxx     # 删除已合并的本地分支
+git branch -D feature/xxx     # 强制删除本地分支（没合并也删）
+git push origin --delete feature/xxx  # 删除 GitHub 上的远程分支
 ```
 
 **分支命名习惯**：

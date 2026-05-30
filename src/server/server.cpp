@@ -8,7 +8,7 @@
 #include "../sql/executor.h"
 #include "../sql/formatter.h"
 #include "../storage/engine.h"
-#include "../persistence/snapshot.h"
+#include "../persistence/aof.h"
 #include <algorithm>
 #include <cstring>
 #include <sstream>
@@ -116,8 +116,10 @@ bool TcpServer::start() {
 
     m_running = true;
 
-    // 启动时自动加载数据
-    Snapshot::load("data/blueis.json");
+    // 启动时：打开 AOF + 重放命令恢复数据
+    Aof::instance().open("data/blueis.aof");
+    Aof::instance().load("data/blueis.aof",
+        [this](const std::string& cmd) { process_command(cmd, false); });
 
     std::cout << "[INFO] Blueis listening on port " << m_port << std::endl;
     return true;
@@ -173,7 +175,7 @@ void TcpServer::stop() {
         m_listen_socket = INVALID_SOCKET;
     }
     cleanup_threads();
-    Snapshot::save("data/blueis.json");
+    Aof::instance().close();
 }
 
 void TcpServer::cleanup_threads() {
@@ -414,17 +416,33 @@ void TcpServer::handle_client(SOCKET client_socket) {
 // 命令处理
 // ============================================================
 
-std::string TcpServer::process_command(const std::string& raw) {
+std::string TcpServer::process_command(const std::string& raw, bool record_aof) {
     ProtocolParser parser;
     Command cmd = parser.parse(raw);
 
     if (cmd.type == CommandType::Unknown) {
         return "(empty command)";
     }
+
+    std::string result;
     if (cmd.type == CommandType::SQL) {
-        return execute_sql(cmd);
+        result = execute_sql(cmd);
+    } else {
+        result = execute_redis(cmd);
     }
-    return execute_redis(cmd);
+
+    // 写命令才记 AOF（读命令跳过），AOF 重放时不重复记录
+    if (record_aof && !result.empty() && result[0] != '-') {
+        std::string first = cmd.cmd();  // 已小写的第一个 token
+        if (first == "set" || first == "del" || first == "hset" ||
+            first == "hdel" ||
+            first == "create" || first == "insert" || first == "update" ||
+            first == "delete" || first == "drop") {
+            Aof::instance().append(raw);
+        }
+    }
+
+    return result;
 }
 
 // ============================================================
@@ -550,10 +568,8 @@ std::string TcpServer::execute_redis(const Command& cmd) {
     }
 
     if (name == "save") {
-        if (Snapshot::save("data/blueis.json")) {
-            return "+OK";
-        }
-        return "-ERR save failed";
+        Aof::instance().rewrite(store, "data/blueis.aof");
+        return "+OK";
     }
 
     return "-ERR unknown command '" + name + "'";
