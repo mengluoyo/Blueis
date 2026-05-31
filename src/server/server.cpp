@@ -237,8 +237,28 @@ void TcpServer::handle_client(SOCKET client_socket) {
     std::vector<std::string> vLineStr;  // 存储各行字符
     std::string last_line;  // 最后一行暂未被存储的字符
     bool in_esc = false;    // 处于方向键编辑状态
-    bool welcomed = false;  // 是否已发送欢迎信息
     string esc_buf;         // 存储方向键字符
+
+    // MSG_PEEK 偷看首字节判断协议类型，100ms 超时
+    int timeout = 100;
+    setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+
+    char peek;
+    int n = recv(client_socket, &peek, 1, MSG_PEEK);
+
+    // 恢复为阻塞模式
+    timeout = 0;
+    setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+
+    if (n > 0 && peek == '*') {
+        // redis-cli 客户端，不发欢迎信息
+    } else {
+        // telnet / 普通客户端 或 超时，先发欢迎信息
+        const char* welcome = "Blueis v1.0.0\r\nType your command:\r\n";
+        send(client_socket, welcome, static_cast<int>(strlen(welcome)), 0);
+    }
 
     while (m_running) {
         int received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
@@ -269,13 +289,6 @@ void TcpServer::handle_client(SOCKET client_socket) {
         // 过滤 telnet 协商字节
         received = filter_telnet(client_socket, buffer, received);
         if (received <= 0) continue;
-
-        // telnet 模式：首次连接发送欢迎信息
-        if (!welcomed) {
-            const char* welcome = "Blueis v1.0.0\r\nType your command:\r\n";
-            send(client_socket, welcome, static_cast<int>(strlen(welcome)), 0);
-            welcomed = true;
-        }
 
         std::string data(buffer, received);
 
