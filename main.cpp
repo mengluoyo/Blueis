@@ -9,7 +9,7 @@ int main() {
         return 1;
     }
 
-    std::cout << "Blueis v0.1.0 ready. Port: 6380" << std::endl;
+    std::cout << "Blueis v1.0.0 ready. Port: 6380" << std::endl;
     std::cout << "Connect via: telnet 127.0.0.1 6380" << std::endl;
 
     server.run();
