@@ -11,8 +11,9 @@ Blueis — 仿 Redis 的轻量级内存缓存数据库，C++17，Windows/MinGW�
 - Phase 4: 终端行编辑（方向键、多行输入、全行重绘）
 - Phase 5: RESP 协议兼容（RespParser + RespWriter, redis-cli 可直接连接）
 - Phase 6: AOF 持久化（Append-Only File, 启动重放, SAVE 触发 rewrite）
+- Phase 7: 过期机制（EXPIRE/EXPIREAT/TTL/PERSIST, 惰性删除 + 定期删除, AOF 持久化过期信息）
 
-**待实现**：过期机制 → 内存管理 → IO 多路复用 → 主从复制 → 哨兵/集群
+**待实现**：内存管理 → IO 多路复用 → 主从复制 → 哨兵/集群
 详见 [需求文档_v1.0.md](需求文档_v1.0.md)
 
 ## 核心目录结构

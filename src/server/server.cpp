@@ -121,6 +121,9 @@ bool TcpServer::start() {
     Aof::instance().load("data/blueis.aof",
         [this](const std::string& cmd) { process_command(cmd, false); });
 
+    // 启动过期清理后台线程 (Phase 7)
+    StorageEngine::instance().start_expire_loop();
+
     std::cout << "[INFO] Blueis listening on port " << m_port << std::endl;
     return true;
 }
@@ -175,6 +178,7 @@ void TcpServer::stop() {
         m_listen_socket = INVALID_SOCKET;
     }
     cleanup_threads();
+    StorageEngine::instance().stop_expire_loop();
     Aof::instance().close();
 }
 
@@ -449,6 +453,7 @@ std::string TcpServer::process_command(const std::string& raw, bool record_aof) 
         std::string first = cmd.cmd();  // 已小写的第一个 token
         if (first == "set" || first == "del" || first == "hset" ||
             first == "hdel" ||
+            first == "expire" || first == "expireat" || first == "persist" ||
             first == "create" || first == "insert" || first == "update" ||
             first == "delete" || first == "drop") {
             Aof::instance().append(raw);
@@ -578,6 +583,48 @@ std::string TcpServer::execute_redis(const Command& cmd) {
             oss << result[i];
         }
         return oss.str();
+    }
+
+    if (name == "expire") {
+        if (cmd.arg_size() < 3) {
+            return "-ERR wrong number of arguments for 'expire' command";
+        }
+        try {
+            int64_t seconds = std::stoll(cmd.arg(2));
+            bool ok = store.expire(cmd.arg(1), seconds);
+            return ok ? ":1" : ":0";
+        } catch (...) {
+            return "-ERR value is not an integer";
+        }
+    }
+
+    if (name == "expireat") {
+        if (cmd.arg_size() < 3) {
+            return "-ERR wrong number of arguments for 'expireat' command";
+        }
+        try {
+            int64_t ts_sec = std::stoll(cmd.arg(2));
+            bool ok = store.expireat(cmd.arg(1), ts_sec * 1000);
+            return ok ? ":1" : ":0";
+        } catch (...) {
+            return "-ERR value is not an integer";
+        }
+    }
+
+    if (name == "ttl") {
+        if (cmd.arg_size() < 2) {
+            return "-ERR wrong number of arguments for 'ttl' command";
+        }
+        int64_t t = store.ttl(cmd.arg(1));
+        return ":" + std::to_string(t);
+    }
+
+    if (name == "persist") {
+        if (cmd.arg_size() < 2) {
+            return "-ERR wrong number of arguments for 'persist' command";
+        }
+        bool ok = store.persist(cmd.arg(1));
+        return ok ? ":1" : ":0";
     }
 
     if (name == "save") {

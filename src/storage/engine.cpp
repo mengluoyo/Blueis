@@ -1,5 +1,6 @@
 #include "engine.h"
 #include <any>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 
@@ -21,6 +22,8 @@ void StorageEngine::set(const std::string& key, const std::string& value) {
 
 std::optional<std::string> StorageEngine::get(const std::string& key) const {
     std::shared_lock lock(m_mutex);
+    // 惰性删除：如果 key 已过期，直接返回不存在
+    if (check_expired(key)) return std::nullopt;
     auto it = m_strings.find(key);
     if (it == m_strings.end()) return std::nullopt;
     return it->second;
@@ -28,18 +31,22 @@ std::optional<std::string> StorageEngine::get(const std::string& key) const {
 
 bool StorageEngine::del(const std::string& key) {
     std::unique_lock lock(m_mutex);
-    return m_strings.erase(key) > 0;
+    m_expires.erase(key);  // 同步清理过期记录
+    return m_strings.erase(key) > 0 || m_hashes.erase(key) > 0;
 }
 
 bool StorageEngine::exists(const std::string& key) const {
     std::shared_lock lock(m_mutex);
-    return m_strings.find(key) != m_strings.end();
+    if (check_expired(key)) return false;
+    return m_strings.find(key) != m_strings.end() ||
+           m_hashes.find(key) != m_hashes.end();
 }
 
 std::vector<std::string> StorageEngine::keys(const std::string& pattern) const {
     std::shared_lock lock(m_mutex);
     std::vector<std::string> result;
     for (const auto& [k, v] : m_strings) {
+        if (check_expired(k)) continue;
         if (match_pattern(k, pattern)) result.push_back(k);
     }
     return result;
@@ -145,6 +152,7 @@ void StorageEngine::hset(const std::string& key, const std::string& field, const
 
 std::optional<std::string> StorageEngine::hget(const std::string& key, const std::string& field) const {
     std::shared_lock lock(m_mutex);
+    if (check_expired(key)) return std::nullopt;
     auto it = m_hashes.find(key);
     if (it == m_hashes.end()) return std::nullopt;
     auto fit = it->second.find(field);
@@ -161,6 +169,7 @@ bool StorageEngine::hdel(const std::string& key, const std::string& field) {
 
 bool StorageEngine::hexists(const std::string& key, const std::string& field) const {
     std::shared_lock lock(m_mutex);
+    if (check_expired(key)) return false;
     auto it = m_hashes.find(key);
     if (it == m_hashes.end()) return false;
     return it->second.find(field) != it->second.end();
@@ -168,6 +177,7 @@ bool StorageEngine::hexists(const std::string& key, const std::string& field) co
 
 std::vector<std::pair<std::string, std::string>> StorageEngine::hgetall(const std::string& key) const {
     std::shared_lock lock(m_mutex);
+    if (check_expired(key)) return {};
     auto it = m_hashes.find(key);
     if (it == m_hashes.end()) return {};
     std::vector<std::pair<std::string, std::string>> result;
@@ -179,6 +189,7 @@ std::vector<std::pair<std::string, std::string>> StorageEngine::hgetall(const st
 
 std::vector<std::string> StorageEngine::hkeys(const std::string& key) const {
     std::shared_lock lock(m_mutex);
+    if (check_expired(key)) return {};
     auto it = m_hashes.find(key);
     if (it == m_hashes.end()) return {};
     std::vector<std::string> result;
@@ -260,6 +271,132 @@ bool StorageEngine::match_pattern(const std::string& key, const std::string& pat
                key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0;
     }
     return key == pattern;
+}
+
+// ============================================================
+// 过期机制 (Phase 7)
+// ============================================================
+
+int64_t StorageEngine::now_ms() {
+    auto now = std::chrono::system_clock::now();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+}
+
+bool StorageEngine::check_expired(const std::string& key) const {
+    auto it = m_expires.find(key);
+    if (it == m_expires.end()) return false;
+    return it->second <= now_ms();
+}
+
+bool StorageEngine::expire(const std::string& key, int64_t seconds) {
+    std::unique_lock lock(m_mutex);
+    // key 必须存在（String 或 Hash）
+    if (m_strings.find(key) == m_strings.end() &&
+        m_hashes.find(key) == m_hashes.end()) {
+        return false;
+    }
+    m_expires[key] = now_ms() + seconds * 1000;
+    return true;
+}
+
+bool StorageEngine::expireat(const std::string& key, int64_t timestamp_ms) {
+    std::unique_lock lock(m_mutex);
+    if (m_strings.find(key) == m_strings.end() &&
+        m_hashes.find(key) == m_hashes.end()) {
+        return false;
+    }
+    m_expires[key] = timestamp_ms;
+    return true;
+}
+
+int64_t StorageEngine::ttl(const std::string& key) const {
+    std::shared_lock lock(m_mutex);
+    // key 不存在
+    if (m_strings.find(key) == m_strings.end() &&
+        m_hashes.find(key) == m_hashes.end()) {
+        return -2;
+    }
+    auto it = m_expires.find(key);
+    if (it == m_expires.end()) return -1;  // 永久
+    int64_t remaining = it->second - now_ms();
+    if (remaining <= 0) return -2;  // 已过期，视为不存在
+    return (remaining + 999) / 1000;  // 向上取整到秒
+}
+
+int64_t StorageEngine::pttl(const std::string& key) const {
+    std::shared_lock lock(m_mutex);
+    if (m_strings.find(key) == m_strings.end() &&
+        m_hashes.find(key) == m_hashes.end()) {
+        return -2;
+    }
+    auto it = m_expires.find(key);
+    if (it == m_expires.end()) return -1;
+    int64_t remaining = it->second - now_ms();
+    if (remaining <= 0) return -2;
+    return remaining;
+}
+
+bool StorageEngine::persist(const std::string& key) {
+    std::unique_lock lock(m_mutex);
+    return m_expires.erase(key) > 0;
+}
+
+std::optional<int64_t> StorageEngine::get_expire(const std::string& key) const {
+    std::shared_lock lock(m_mutex);
+    auto it = m_expires.find(key);
+    if (it == m_expires.end()) return std::nullopt;
+    return it->second;
+}
+
+// ============================================================
+// 后台定期删除 (Phase 7)
+// ============================================================
+
+void StorageEngine::start_expire_loop() {
+    m_expire_running = true;
+    m_expire_thread = std::thread(&StorageEngine::expire_loop, this);
+}
+
+void StorageEngine::stop_expire_loop() {
+    m_expire_running = false;
+    if (m_expire_thread.joinable()) {
+        m_expire_thread.join();
+    }
+}
+
+void StorageEngine::expire_loop() {
+    while (m_expire_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        std::unique_lock lock(m_mutex);
+        if (m_expires.empty()) continue;
+
+        int64_t now = now_ms();
+        int checked = 0;
+        int expired = 0;
+        int max_check = std::min(20, static_cast<int>(m_expires.size()));
+
+        auto it = m_expires.begin();
+        while (checked < max_check && it != m_expires.end()) {
+            if (it->second <= now) {
+                // 删除过期 key 的数据和过期记录
+                m_strings.erase(it->first);
+                m_hashes.erase(it->first);
+                it = m_expires.erase(it);
+                ++expired;
+            } else {
+                ++it;
+            }
+            ++checked;
+        }
+
+        // 过期比例 > 25% 时不休眠，继续下一轮加速清理
+        if (expired > max_check / 4) {
+            lock.unlock();
+            // 不 sleep，直接进入下一轮 while 循环
+        }
+    }
 }
 
 } // namespace blueis

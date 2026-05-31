@@ -64,6 +64,12 @@ void Aof::rewrite(StorageEngine& store, const std::string& path) {
             ofs << "SET " << k << " " << v.value() << "\n";
             ++count;
         }
+        // 持久化过期信息 (Phase 7)
+        auto exp = store.get_expire(k);
+        if (exp.has_value()) {
+            ofs << "EXPIREAT " << k << " " << (exp.value() / 1000) << "\n";
+            ++count;
+        }
     }
 
     // Hash 数据
@@ -72,6 +78,12 @@ void Aof::rewrite(StorageEngine& store, const std::string& path) {
         auto all = store.hgetall(hk);
         for (const auto& [field, val] : all) {
             ofs << "HSET " << hk << " " << field << " " << val << "\n";
+            ++count;
+        }
+        // 持久化过期信息 (Phase 7)
+        auto exp = store.get_expire(hk);
+        if (exp.has_value()) {
+            ofs << "EXPIREAT " << hk << " " << (exp.value() / 1000) << "\n";
             ++count;
         }
     }

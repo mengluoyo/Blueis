@@ -2,9 +2,11 @@
 #define BLUEIS_STORAGE_ENGINE_H
 
 #include "common.h"
+#include <atomic>
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -43,6 +45,18 @@ public:
     void delete_row(const std::string& table, const std::string& pk);
     int delete_all_rows(const std::string& table);
 
+    // === 过期操作 (Phase 7) ===
+    bool expire(const std::string& key, int64_t seconds);
+    bool expireat(const std::string& key, int64_t timestamp_ms);
+    int64_t ttl(const std::string& key) const;
+    int64_t pttl(const std::string& key) const;
+    bool persist(const std::string& key);
+    std::optional<int64_t> get_expire(const std::string& key) const;
+
+    // 过期后台线程
+    void start_expire_loop();
+    void stop_expire_loop();
+
     // === Hash 操作 (Phase 3) ===
     void hset(const std::string& key, const std::string& field, const std::string& value);
     std::optional<std::string> hget(const std::string& key, const std::string& field) const;
@@ -64,6 +78,9 @@ private:
     StorageEngine() = default;
 
     bool match_pattern(const std::string& key, const std::string& pattern) const;
+    bool check_expired(const std::string& key) const;
+    void expire_loop();
+    static int64_t now_ms();
 
     mutable std::shared_mutex m_mutex;
     std::unordered_map<std::string, std::string> m_strings;     // Redis
@@ -71,6 +88,11 @@ private:
     // key: "table:pkValue" → DataRow
     std::unordered_map<std::string, std::unordered_map<std::string, DataRow>> m_rows;
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_hashes;
+
+    // 过期字典 (Phase 7): key → 过期时间戳 (毫秒)
+    std::unordered_map<std::string, int64_t> m_expires;
+    std::thread m_expire_thread;
+    std::atomic<bool> m_expire_running{false};
 };
 
 } // namespace blueis
