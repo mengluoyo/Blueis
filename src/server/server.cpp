@@ -282,7 +282,7 @@ void TcpServer::handle_client(SOCKET client_socket) {
                 raw += cmd.tokens[i];
             }
 
-            std::string response = process_command(raw);
+            std::string response = process_command(raw, true);
             RespWriter resp_writer;
             std::string resp_data = resp_writer.to_resp(response);
             send(client_socket, resp_data.c_str(),
@@ -383,7 +383,7 @@ void TcpServer::handle_client(SOCKET client_socket) {
 
                 if(sql_buf == "exit"){
                     // 自动执行操作保存
-                    process_command("save");
+                    process_command("save", false);
                     string bye = "bye";
                     send(client_socket, bye.c_str(), bye.size(), 0);
                     closesocket(client_socket);

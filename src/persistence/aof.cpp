@@ -117,7 +117,16 @@ void Aof::rewrite(StorageEngine& store, const std::string& path) {
             ofs << ") VALUES (";
             for (size_t i = 0; i < meta->columns.size(); ++i) {
                 if (i > 0) ofs << ", ";
-                ofs << StorageEngine::row_value_str(row, meta->columns[i].name);
+                std::string col_type = meta->columns[i].type;
+                std::string val = StorageEngine::row_value_str(row, meta->columns[i].name);
+                // 字符串类型需要加引号
+                bool is_string = (col_type.find("CHAR") != std::string::npos ||
+                                  col_type.find("char") != std::string::npos);
+                if (is_string && !val.empty()) {
+                    ofs << "'" << val << "'";
+                } else {
+                    ofs << val;
+                }
             }
             ofs << ")\n";
             ++count;
