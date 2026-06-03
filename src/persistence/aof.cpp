@@ -163,4 +163,17 @@ void Aof::close() {
     }
 }
 
+void Aof::truncate() {
+    std::lock_guard lock(m_mutex);
+    if (m_file.is_open()) {
+        m_file.close();
+    }
+    // 以截断模式打开 → 文件内容清空
+    m_file.open(m_path, std::ios::out | std::ios::trunc);
+    m_file.close();
+    // 再以追加模式重新打开，后续写命令正常追加
+    m_file.open(m_path, std::ios::app | std::ios::out);
+    std::cout << "[INFO] AOF truncated: " << m_path << std::endl;
+}
+
 } // namespace blueis

@@ -47,11 +47,27 @@ private:
 
     void cleanup_threads();
 
+    // 自动保存
+    void start_auto_save();
+    void stop_auto_save();
+    void auto_save_loop();
+    void trigger_auto_save();
+    void record_write() { m_write_count++; }
+    
+    // SQL,Redis 写命令记录
+    bool is_write_command(const std::string& keyword);
+
     uint16_t m_port;
     SOCKET m_listen_socket = INVALID_SOCKET;
     std::atomic<bool> m_running{false};
     std::mutex m_threads_mutex;
     std::vector<std::thread> m_threads;
+
+    // 自动保存配置
+    bool m_auto_save_enabled = true;     // 默认开启自动保存
+    int m_auto_save_interval = 60;        // 自动保存间隔（秒），默认60秒
+    std::atomic<int> m_write_count{0};    // 写命令计数
+    std::thread m_auto_save_thread;
 };
 
 } // namespace blueis

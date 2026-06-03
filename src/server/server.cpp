@@ -9,13 +9,16 @@
 #include "../sql/formatter.h"
 #include "../storage/engine.h"
 #include "../persistence/aof.h"
+#include "../persistence/rdb.h"
 #include <algorithm>
 #include <cstring>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <vector>
 #include <winsock2.h>
+#include <unordered_set>
 
 using namespace std;
 
@@ -116,13 +119,18 @@ bool TcpServer::start() {
 
     m_running = true;
 
-    // 启动时：打开 AOF + 重放命令恢复数据
+    // 启动时：先加载 RDB（快），再重放 AOF（增量）
+    Rdb::instance().load("data/blueis.rdb");
+
     Aof::instance().open("data/blueis.aof");
     Aof::instance().load("data/blueis.aof",
         [this](const std::string& cmd) { process_command(cmd, false); });
 
     // 启动过期清理后台线程 (Phase 7)
     StorageEngine::instance().start_expire_loop();
+
+    // 启动自动保存线程
+    start_auto_save();
 
     std::cout << "[INFO] Blueis listening on port " << m_port << std::endl;
     return true;
@@ -179,6 +187,7 @@ void TcpServer::stop() {
     }
     cleanup_threads();
     StorageEngine::instance().stop_expire_loop();
+    stop_auto_save();
     Aof::instance().close();
 }
 
@@ -256,7 +265,11 @@ void TcpServer::handle_client(SOCKET client_socket) {
     setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO,
                reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 
-    if (n > 0 && peek == '*') {
+    // 连接时一次性判断协议类型，后续不再重新检测
+    // 否则 telnet 用户输入 SELECT * 时，* 落在单独的 TCP 包里
+    // 会被误判为 RESP 命令，返回 $15\r\n(empty command)
+    bool is_resp = (n > 0 && peek == '*');
+    if (is_resp) {
         // redis-cli 客户端，不发欢迎信息
     } else {
         // telnet / 普通客户端 或 超时，先发欢迎信息
@@ -270,8 +283,8 @@ void TcpServer::handle_client(SOCKET client_socket) {
             break;
         }
 
-        // RESP 协议检测：首字节为 '*' 表示 redis-cli 发来的命令
-        if (buffer[0] == '*') {
+        // 使用连接时确定的协议类型，不再每次检查 buffer[0]
+        if (is_resp) {
             RespParser resp_parser;
             Command cmd = resp_parser.parse(buffer, received);
 
@@ -391,7 +404,7 @@ void TcpServer::handle_client(SOCKET client_socket) {
                 
                 if (!sql_buf.empty()) {
                     // cout << "command: " << sql_buf << "sizes: " << sql_buf.size() << endl;
-                    std::string response = process_command(sql_buf);
+                    std::string response = process_command(sql_buf, true);
                     response += "\r\n";
                     send(client_socket, response.c_str(),
                          static_cast<int>(response.size()), 0);
@@ -441,6 +454,19 @@ std::string TcpServer::process_command(const std::string& raw, bool record_aof) 
         return "(empty command)";
     }
 
+    // 通用命令拦截：save / bgsave（不区分 Redis/SQL）
+    std::string name = cmd.cmd();
+    if (name == "save") {
+        Rdb::instance().save("data/blueis.rdb");
+        // 截断 AOF：RDB 已包含全量数据，AOF 只需记录后续增量
+        Aof::instance().truncate();
+        return "+OK";
+    }
+    if (name == "bgsave") {
+        Rdb::instance().bgsave("data/blueis.rdb");
+        return "+OK";
+    }
+
     std::string result;
     if (cmd.type == CommandType::SQL) {
         result = execute_sql(cmd);
@@ -448,19 +474,59 @@ std::string TcpServer::process_command(const std::string& raw, bool record_aof) 
         result = execute_redis(cmd);
     }
 
-    // 写命令才记 AOF（读命令跳过），AOF 重放时不重复记录
-    if (record_aof && !result.empty() && result[0] != '-') {
-        std::string first = cmd.cmd();  // 已小写的第一个 token
-        if (first == "set" || first == "del" || first == "hset" ||
-            first == "hdel" ||
-            first == "expire" || first == "expireat" || first == "persist" ||
-            first == "create" || first == "insert" || first == "update" ||
-            first == "delete" || first == "drop") {
+    // 写命令计数，用于触发自动保存（与下方 AOF 记录解耦）
+    if (is_write_command(name)) {
+        record_write();
+        // 写命令才记 AOF（读命令跳过），AOF 重放时不重复记录
+        if(record_aof && !result.empty() && result[0] != '-'){
+            // 记录 AOF
             Aof::instance().append(raw);
         }
     }
 
     return result;
+}
+
+// ============================================================
+// 自动保存（后台定时 RDB 快照 + AOF 截断）
+// ============================================================
+
+void TcpServer::start_auto_save() {
+    if (!m_auto_save_enabled) return;
+    m_write_count = 0;
+    m_auto_save_thread = std::thread(&TcpServer::auto_save_loop, this);
+    std::cout << "[INFO] auto save started, interval=" << m_auto_save_interval << "s" << std::endl;
+}
+
+void TcpServer::stop_auto_save() {
+    m_auto_save_enabled = false;
+    if (m_auto_save_thread.joinable()) {
+        m_auto_save_thread.join();
+    }
+    std::cout << "[INFO] auto save stopped" << std::endl;
+}
+
+void TcpServer::auto_save_loop() {
+    while (m_running && m_auto_save_enabled) {
+        // 按秒休眠，方便响应 shutdown
+        for (int i = 0; i < m_auto_save_interval && m_running && m_auto_save_enabled; ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        if (!m_running || !m_auto_save_enabled) break;
+
+        trigger_auto_save();
+    }
+}
+
+void TcpServer::trigger_auto_save() {
+    int cnt = m_write_count.exchange(0);
+    if (cnt == 0) return;
+
+    std::cout << "[INFO] auto save triggered, write_count=" << cnt << std::endl;
+
+    // 始终用同步 save，因为本方法已在独立线程中运行，不会阻塞主线程
+    Rdb::instance().save("data/blueis.rdb");
+    Aof::instance().truncate();
 }
 
 // ============================================================
@@ -627,11 +693,6 @@ std::string TcpServer::execute_redis(const Command& cmd) {
         return ok ? ":1" : ":0";
     }
 
-    if (name == "save") {
-        Aof::instance().rewrite(store, "data/blueis.aof");
-        return "+OK";
-    }
-
     return "-ERR unknown command '" + name + "'";
 }
 
@@ -650,6 +711,13 @@ std::string TcpServer::execute_sql(const Command& cmd) {
     } catch (const std::exception& e) {
         return std::string("-ERR ") + e.what();
     }
+}
+
+bool TcpServer::is_write_command(const std::string& keyword){
+    static const std::unordered_set<std::string> write_keywords = {
+        "set", "del", "hset", "hdel", "expire", "expireat", "persist", "create", "insert", "update", "delete", "drop"
+    };
+    return write_keywords.find(keyword) != write_keywords.end();
 }
 
 } // namespace blueis

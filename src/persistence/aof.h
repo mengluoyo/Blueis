@@ -27,6 +27,9 @@ public:
     // 用当前内存数据重写 AOF（压缩）
     void rewrite(StorageEngine& store, const std::string& path);
 
+    // 截断 AOF 文件（清空内容，保留文件），RDB save 后调用
+    void truncate();
+
     // 关闭 AOF 文件
     void close();
 
