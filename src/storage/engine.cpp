@@ -53,30 +53,69 @@ std::vector<std::string> StorageEngine::keys(const std::string& pattern) const {
 }
 
 // ============================================================
+// 数据库管理
+// ============================================================
+void StorageEngine::create_database(const std::string &name) {
+    std::unique_lock lock(m_mutex);
+    // 库名已存在则不创建（或可覆盖）
+    if (m_databases.find(name) != m_databases.end()) return;
+    m_databases[name] = DataBase{};
+}
+
+void StorageEngine::drop_database(const std::string &name) {
+    std::unique_lock lock(m_mutex);
+    m_databases.erase(name);
+    // 如果删除的是当前库，切回空或默认
+    if (m_database_name == name) {
+        m_database_name = "";
+    }
+}
+
+bool StorageEngine::use_database(const std::string &name) {
+    std::unique_lock lock(m_mutex);
+    if (m_databases.find(name) == m_databases.end()) {
+        return false;  // 库不存在
+    }
+    m_database_name = name;
+    return true;
+}
+
+std::vector<std::string> StorageEngine::show_databases() const {
+    std::shared_lock lock(m_mutex);
+    std::vector<std::string> names;
+    for (const auto& [k, v] : m_databases) {
+        names.push_back(k);
+    }
+    return names;
+}    
+
+// ============================================================
 // 表管理
 // ============================================================
 
 void StorageEngine::create_table(const TableMeta& meta) {
     std::unique_lock lock(m_mutex);
-    m_tables[meta.name] = meta;
+    m_databases[m_database_name].m_tables[meta.name] = meta; 
 }
 
 void StorageEngine::drop_table(const std::string& name) {
     std::unique_lock lock(m_mutex);
-    m_tables.erase(name);
-    m_rows.erase(name);
+    m_databases[m_database_name].m_tables.erase(name);
+    m_databases[m_database_name].m_rows.erase(name);
 }
 
 const TableMeta* StorageEngine::get_table(const std::string& name) const {
     std::shared_lock lock(m_mutex);
-    auto it = m_tables.find(name);
-    return it == m_tables.end() ? nullptr : &it->second;
+    const auto& tables = m_databases.at(m_database_name).m_tables;
+    auto it = tables.find(name);
+    return it == tables.end() ? nullptr : &it->second;
 }
 
 std::vector<std::string> StorageEngine::show_tables() const {
     std::shared_lock lock(m_mutex);
     std::vector<std::string> names;
-    for (const auto& [k, v] : m_tables) names.push_back(k);
+    const auto& tables = m_databases.at(m_database_name).m_tables;
+    for (const auto& [k, v] : tables) names.push_back(k);
     return names;
 }
 
@@ -88,11 +127,11 @@ std::string StorageEngine::make_row_key(const std::string& table, const std::str
     return table + ":" + pk;
 }
 
-void StorageEngine::insert_row(const std::string& table, const DataRow& row, const std::string& pk_col) {
+bool StorageEngine::insert_row(const std::string& table, const DataRow& row, const std::string& pk_col) {
     std::unique_lock lock(m_mutex);
     auto pk_it = row.find(pk_col);
     if (pk_it == row.end()) {
-        return; // 主键不存在
+        return false; // 主键不存在
     }
     std::string pk;
     if (pk_it->second.type() == typeid(std::string)) {
@@ -103,13 +142,19 @@ void StorageEngine::insert_row(const std::string& table, const DataRow& row, con
         pk = std::to_string(std::any_cast<int>(pk_it->second));
     }
     std::string key = table + ":" + pk;
-    m_rows[table][key] = row;
+    auto& rows = m_databases[m_database_name].m_rows[table];
+    if (rows.find(key) != rows.end()) {
+        return false; // 主键冲突
+    }
+    rows[key] = row;
+    return true;
 }
 
 std::vector<DataRow> StorageEngine::get_all_rows(const std::string& table) const {
     std::shared_lock lock(m_mutex);
-    auto tit = m_rows.find(table);
-    if (tit == m_rows.end()) return {};
+    const auto& rows = m_databases.at(m_database_name).m_rows;
+    auto tit = rows.find(table);
+    if (tit == rows.end()) return {};
     std::vector<DataRow> result;
     for (const auto& [k, v] : tit->second) {
         result.push_back(v);
@@ -120,16 +165,18 @@ std::vector<DataRow> StorageEngine::get_all_rows(const std::string& table) const
 void StorageEngine::delete_row(const std::string& table, const std::string& pk) {
     std::unique_lock lock(m_mutex);
     std::string key = table + ":" + pk;
-    auto tit = m_rows.find(table);
-    if (tit != m_rows.end()) {
+    auto& rows = m_databases[m_database_name].m_rows;
+    auto tit = rows.find(table);
+    if (tit != rows.end()) {
         tit->second.erase(key);
     }
 }
 
 int StorageEngine::delete_all_rows(const std::string& table) {
     std::unique_lock lock(m_mutex);
-    auto tit = m_rows.find(table);
-    if (tit == m_rows.end()) return 0;
+    auto& rows = m_databases[m_database_name].m_rows;
+    auto tit = rows.find(table);
+    if (tit == rows.end()) return 0;
     int n = static_cast<int>(tit->second.size());
     tit->second.clear();
     return n;

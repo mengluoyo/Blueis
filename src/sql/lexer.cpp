@@ -12,7 +12,8 @@ static const std::unordered_set<std::string> keywords = {
     "create", "table", "insert", "into", "values", "select",
     "from", "where", "update", "set", "delete", "drop", "show",
     "tables", "primary", "key", "int", "varchar", "bool", "float",
-    "like", "and", "or", "not", "order", "by"
+    "char", "text", "double",
+    "like", "and", "or", "not", "order", "by", "databases"
 };
 
 Lexer::Lexer(const std::string& input) : m_input(input) {}

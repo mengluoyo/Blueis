@@ -35,6 +35,7 @@ private:
     void write_hash(std::ofstream& fs, const std::string& key);
     void write_tables(std::ofstream& fs, StorageEngine& store);
     void write_expires(std::ofstream& fs, StorageEngine& store);
+    void write_database_header(std::ofstream& fs, const std::string& db_name);
     void write_checksum(std::ofstream& fs);
 
     // 读取辅助方法
@@ -45,6 +46,7 @@ private:
     void read_hash(std::ifstream& fs);
     void read_tables(std::ifstream& fs);
     void read_expires(std::ifstream& fs);
+    std::string read_database_header(std::ifstream& fs);
 
     static constexpr const char* MAGIC = "BLUEISRDB";
     static constexpr uint32_t VERSION = 1;

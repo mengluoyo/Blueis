@@ -25,7 +25,7 @@ Command ProtocolParser::parse(const std::string& raw) const {
 
 CommandType ProtocolParser::detect_type(const std::string& first_token) const {
     static const std::unordered_set<std::string> sql_keywords = {
-        "create", "insert", "select", "update", "delete", "drop", "show"
+        "create", "insert", "select", "update", "delete", "drop", "show", "use"
     };
 
     if (sql_keywords.find(first_token) != sql_keywords.end()) {

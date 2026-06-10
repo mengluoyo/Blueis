@@ -88,48 +88,56 @@ void Aof::rewrite(StorageEngine& store, const std::string& path) {
         }
     }
 
-    // 表数据
-    auto table_names = store.show_tables();
-    for (const auto& tname : table_names) {
-        const auto* meta = store.get_table(tname);
-        if (!meta) continue;
+    // 表数据（按数据库分组）
+    auto db_names = store.show_databases();
+    for (const auto& db_name : db_names) {
+        store.use_database(db_name);
 
-        // CREATE TABLE
-        ofs << "CREATE TABLE " << tname << " (";
-        for (size_t i = 0; i < meta->columns.size(); ++i) {
-            if (i > 0) ofs << ", ";
-            const auto& cd = meta->columns[i];
-            ofs << cd.name << " " << cd.type;
-            if (cd.size > 0) ofs << "(" << cd.size << ")";
-            if (cd.is_primary) ofs << " PRIMARY KEY";
-        }
-        ofs << ")\n";
+        ofs << "CREATE DATABASE " << db_name << "\n";
         ++count;
 
-        // INSERT 行数据
-        auto rows = store.get_all_rows(tname);
-        for (const auto& row : rows) {
-            ofs << "INSERT INTO " << tname << " (";
+        auto table_names = store.show_tables();
+        for (const auto& tname : table_names) {
+            const auto* meta = store.get_table(tname);
+            if (!meta) continue;
+
+            // CREATE TABLE
+            ofs << "CREATE TABLE " << tname << " (";
             for (size_t i = 0; i < meta->columns.size(); ++i) {
                 if (i > 0) ofs << ", ";
-                ofs << meta->columns[i].name;
-            }
-            ofs << ") VALUES (";
-            for (size_t i = 0; i < meta->columns.size(); ++i) {
-                if (i > 0) ofs << ", ";
-                std::string col_type = meta->columns[i].type;
-                std::string val = StorageEngine::row_value_str(row, meta->columns[i].name);
-                // 字符串类型需要加引号
-                bool is_string = (col_type.find("CHAR") != std::string::npos ||
-                                  col_type.find("char") != std::string::npos);
-                if (is_string && !val.empty()) {
-                    ofs << "'" << val << "'";
-                } else {
-                    ofs << val;
-                }
+                const auto& cd = meta->columns[i];
+                ofs << cd.name << " " << cd.type;
+                if (cd.size > 0) ofs << "(" << cd.size << ")";
+                if (cd.is_primary) ofs << " PRIMARY KEY";
             }
             ofs << ")\n";
             ++count;
+
+            // INSERT 行数据
+            auto rows = store.get_all_rows(tname);
+            for (const auto& row : rows) {
+                ofs << "INSERT INTO " << tname << " (";
+                for (size_t i = 0; i < meta->columns.size(); ++i) {
+                    if (i > 0) ofs << ", ";
+                    ofs << meta->columns[i].name;
+                }
+                ofs << ") VALUES (";
+                for (size_t i = 0; i < meta->columns.size(); ++i) {
+                    if (i > 0) ofs << ", ";
+                    std::string col_type = meta->columns[i].type;
+                    std::string val = StorageEngine::row_value_str(row, meta->columns[i].name);
+                    // 字符串类型需要加引号
+                    bool is_string = (col_type.find("CHAR") != std::string::npos ||
+                                      col_type.find("char") != std::string::npos);
+                    if (is_string && !val.empty()) {
+                        ofs << "'" << val << "'";
+                    } else {
+                        ofs << val;
+                    }
+                }
+                ofs << ")\n";
+                ++count;
+            }
         }
     }
 

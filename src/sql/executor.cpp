@@ -21,7 +21,17 @@ Executor::Executor::Result Executor::execute(const Stmt& stmt) {
         return exec_delete(std::get<DeleteStmt>(stmt));
     if (std::holds_alternative<DropTableStmt>(stmt))
         return exec_drop(std::get<DropTableStmt>(stmt));
-    return exec_show(std::get<ShowTablesStmt>(stmt));
+    if (std::holds_alternative<ShowTablesStmt>(stmt))
+        return exec_show(std::get<ShowTablesStmt>(stmt));
+    if (std::holds_alternative<CreateDatabaseStmt>(stmt))
+        return exec_create_database(std::get<CreateDatabaseStmt>(stmt));
+    if (std::holds_alternative<DropDatabaseStmt>(stmt))
+        return exec_drop_database(std::get<DropDatabaseStmt>(stmt));
+    if (std::holds_alternative<ShowDatabasesStmt>(stmt))
+        return exec_show_databases(std::get<ShowDatabasesStmt>(stmt));
+    if (std::holds_alternative<UseStmt>(stmt))
+        return exec_use(std::get<UseStmt>(stmt));
+    throw std::runtime_error("Unknown statement type");
 }
 
 // ============================================================
@@ -56,6 +66,7 @@ Executor::Result Executor::exec_insert(const InsertStmt& s) {
     if (!meta) throw std::runtime_error("Table '" + s.table + "' does not exist");
 
     std::string pk_col = meta->primary_key;
+    int inserted = 0;
 
     for (const auto& row_vals : s.values) {
         DataRow row;
@@ -77,9 +88,12 @@ Executor::Result Executor::exec_insert(const InsertStmt& s) {
                 row[col] = val;
             }
         }
-        m_store.insert_row(s.table, row, pk_col);
+        if (!m_store.insert_row(s.table, row, pk_col)) {
+            throw std::runtime_error("Duplicate primary key for table '" + s.table + "'");
+        }
+        ++inserted;
     }
-    return {{}, {}, static_cast<int>(s.values.size())};
+    return {{}, {}, inserted};
 }
 
 // ============================================================
@@ -135,6 +149,11 @@ Executor::Result Executor::exec_update(const UpdateStmt& s) {
     for (auto& row : all) {
         if (s.where && !eval_expr(s.where, row)) continue;
 
+        // 先删除旧行
+        std::string pk = StorageEngine::row_value_str(row, meta->primary_key);
+        m_store.delete_row(s.table, pk);
+
+        // 修改字段
         for (const auto& set : s.sets) {
             const ColumnDef* col_def = nullptr;
             for (const auto& cd : meta->columns) {
@@ -146,14 +165,10 @@ Executor::Result Executor::exec_update(const UpdateStmt& s) {
                 row[set.column] = set.value;
             }
         }
-        ++count;
-    }
 
-    if (count > 0) {
-        // 重新插入所有修改后的行
-        for (auto& row : all) {
-            m_store.insert_row(s.table, row, meta->primary_key);
-        }
+        // 重新插入修改后的行
+        m_store.insert_row(s.table, row, meta->primary_key);
+        ++count;
     }
 
     return {{}, {}, count};
@@ -206,6 +221,49 @@ Executor::Result Executor::exec_show(const ShowTablesStmt&) {
         rows.push_back({n});
     }
     return {{"Tables_in_blueis"}, rows, static_cast<int>(rows.size())};
+}
+
+// ============================================================
+// CREATE DATABASE
+// ============================================================
+
+Executor::Result Executor::exec_create_database(const CreateDatabaseStmt& s) {
+    m_store.create_database(s.name);
+    return {{}, {}, 0};
+}
+
+// ============================================================
+// DROP DATABASE
+// ============================================================
+
+Executor::Result Executor::exec_drop_database(const DropDatabaseStmt& s) {
+    m_store.drop_database(s.name);
+    return {{}, {}, 0};
+}
+
+// ============================================================
+// SHOW DATABASES
+// ============================================================
+
+Executor::Result Executor::exec_show_databases(const ShowDatabasesStmt&) {
+    auto names = m_store.show_databases();
+    std::vector<std::vector<std::string>> rows;
+    for (const auto& n : names) {
+        rows.push_back({n});
+    }
+    return {{"Databases"}, rows, static_cast<int>(rows.size())};
+}
+
+// ============================================================
+// USE database_name
+// ============================================================
+
+Executor::Result Executor::exec_use(const UseStmt& s) {
+    bool ok = m_store.use_database(s.name);
+    if (!ok) {
+        throw std::runtime_error("Database '" + s.name + "' does not exist");
+    }
+    return {{}, {}, 0};
 }
 
 // ============================================================

@@ -45,8 +45,13 @@ void Rdb::save(const std::string& path) {
         write_hash(fs, hk);
     }
 
-    // 5. Table 数据
-    write_tables(fs, store);
+    // 5. Table 数据（按数据库分组）
+    auto db_names = store.show_databases();
+    for (const auto& db_name : db_names) {
+        write_database_header(fs, db_name);
+        store.use_database(db_name);
+        write_tables(fs, store);
+    }
 
     // 6. Expire 数据
     write_expires(fs, store);
@@ -152,6 +157,13 @@ void Rdb::write_tables(std::ofstream& fs, StorageEngine& store) {
     }
 }
 
+void Rdb::write_database_header(std::ofstream& fs, const std::string& db_name) {
+    // 类型标记: 0x05 = Database
+    uint8_t type = 0x05;
+    fs.write(reinterpret_cast<const char*>(&type), 1);
+    write_string(fs, db_name);
+}
+
 void Rdb::write_checksum(std::ofstream& fs) {
     // 预留 CRC64 (8 bytes)，暂时写 0
     uint64_t crc = 0;
@@ -230,6 +242,13 @@ bool Rdb::load(const std::string& path) {
                 break;
             case 0x04: // Expire
                 read_expires(fs);
+                break;
+            case 0x05: // Database header
+                {
+                    std::string db_name = read_database_header(fs);
+                    store.create_database(db_name);
+                    store.use_database(db_name);
+                }
                 break;
             default:
                 std::cerr << "[WARN] RDB: unknown type 0x"
@@ -350,6 +369,10 @@ void Rdb::read_expires(std::ifstream& fs) {
     if (ts > now) {
         StorageEngine::instance().expireat(key, ts);
     }
+}
+
+std::string Rdb::read_database_header(std::ifstream& fs) {
+    return read_string(fs);
 }
 
 } // namespace blueis

@@ -28,6 +28,7 @@ private:
     Stmt parse_delete();
     Stmt parse_drop();
     Stmt parse_show();
+    Stmt parse_use();
 
     std::unique_ptr<Expr> parse_expr();
     std::unique_ptr<Expr> parse_or();

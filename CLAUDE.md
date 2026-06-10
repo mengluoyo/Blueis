@@ -6,7 +6,7 @@ Blueis — 仿 Redis 的轻量级内存缓存数据库，C++17，Windows/MinGW�
 
 **已完成**：
 - Phase 1: TCP Server + String 命令（SET/GET/DEL/EXISTS/KEYS）
-- Phase 2: 完整 SQL 引擎（CREATE TABLE / INSERT / SELECT / UPDATE / DELETE / DROP TABLE / SHOW TABLES）
+- Phase 2: 完整 SQL 引擎（CREATE TABLE / INSERT / SELECT / UPDATE / DELETE / DROP TABLE / SHOW TABLES / CREATE DATABASE / DROP DATABASE / SHOW DATABASES / USE）
 - Phase 3: Hash 命令（HSET/HGET/HDEL/HEXISTS/HGETALL/HKEYS）
 - Phase 4: 终端行编辑（方向键、多行输入、全行重绘）
 - Phase 5: RESP 协议兼容（RespParser + RespWriter, redis-cli 可直接连接，首次 recv 时检测协议）
@@ -24,7 +24,7 @@ Blueis — 仿 Redis 的轻量级内存缓存数据库，C++17，Windows/MinGW�
 ├── src/server/               # TCP 服务器 (Winsock2, 多线程, 行编辑, 自动保存)
 ├── src/protocol/             # 协议层: CommandParser(文本) + RespParser/RespWriter(RESP)
 ├── src/sql/                  # SQL 引擎: Lexer → Parser → AST → Executor → Formatter
-├── src/storage/              # 存储引擎 (单例, shared_mutex, String + Hash + 表/行, 过期字典)
+├── src/storage/              # 存储引擎 (单例, shared_mutex, String + Hash + 多数据库(表/行) + 过期字典)
 ├── src/persistence/          # 持久化: AOF (命令追加 + rewrite + truncate) + RDB (二进制快照)
 └── build/                    # CMake 构建产物
 ```
@@ -41,7 +41,7 @@ RDB + AOF 混合持久化，由 `TcpServer::trigger_auto_save()` 统一调度：
 RDB 二进制格式（小端）：
 ```
 MAGIC(10B) → VERSION(4B) → [TYPE(1B) + DATA]... → CHECKSUM(8B)
-TYPE: 0x01=String, 0x02=Hash, 0x03=Table, 0x04=Expire
+TYPE: 0x01=String, 0x02=Hash, 0x03=Table, 0x04=Expire, 0x05=Database
 ```
 
 ## 常用开发命令
@@ -69,3 +69,6 @@ telnet 127.0.0.1 6380
 - 数据文件 `data/blueis.rdb` 和 `data/blueis.aof` 在运行目录下自动创建
 - 协议检测在连接建立时一次性完成（MSG_PEEK），不是每次 recv 都判断，避免 telnet 输入 `*` 字符被误判为 RESP
 - 自动保存在后台线程中执行同步 save，因为已在独立线程不会阻塞主循环；勿改回 bgsave 否则与 truncate 存在竞态（RDB 未写完就清空 AOF = 数据丢失）
+- SQL 数据库采用连接级状态：每个客户端通过 `handle_client` 内的 `current_db` 跟踪当前库，USE 命令更新该变量；执行 SQL 前调用 `StorageEngine::use_database()` 设置全局上下文
+- `m_databases` 为 `unordered_map<string, DataBase>`，DataBase 内包含 `m_tables` 和 `m_rows`；表/行操作均通过 `m_database_name` 定位当前库
+- AOF rewrite 按数据库分组输出（先 `CREATE DATABASE`，再该库的所有表数据）；RDB save 同样按库分组（先写 0x05 Database header，再该库的 0x03 Table 数据）

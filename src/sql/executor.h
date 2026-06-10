@@ -31,6 +31,10 @@ private:
     Result exec_delete(const DeleteStmt& s);
     Result exec_drop(const DropTableStmt& s);
     Result exec_show(const ShowTablesStmt& s);
+    Result exec_create_database(const CreateDatabaseStmt& s);
+    Result exec_drop_database(const DropDatabaseStmt& s);
+    Result exec_show_databases(const ShowDatabasesStmt& s);
+    Result exec_use(const UseStmt& s);
 
     // WHERE 表达式求值
     bool eval_expr(const std::unique_ptr<Expr>& e, const DataRow& row) const;

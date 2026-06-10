@@ -60,17 +60,37 @@ Stmt Parser::parse() {
         if (kw == "delete") return parse_delete();
         if (kw == "drop")   return parse_drop();
         if (kw == "show")   return parse_show();
+        if (kw == "use")    return parse_use();
     }
     throw std::runtime_error("Syntax error: unexpected token '" + first.text + "'");
 }
 
 // ==========================================================
-// CREATE TABLE name (col_def, ...)
+// CREATE TABLE name (col_def, ...) / CREATE DATABASE name
 // ==========================================================
 
 Stmt Parser::parse_create() {
     expect(Token::Type::Keyword); // CREATE
-    expect(Token::Type::Keyword); // TABLE
+    Token second = m_lexer.peek();
+    if (second.type == Token::Type::Keyword) {
+        std::string kw2 = second.text;
+        std::transform(kw2.begin(), kw2.end(), kw2.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (kw2 == "database") {
+            advance(); // consume DATABASE
+            Token name = expect(Token::Type::Identifier);
+            match(Token::Type::Semicolon);
+            return CreateDatabaseStmt{name.text};
+        }
+        if (kw2 == "table") {
+            advance(); // consume TABLE
+        } else {
+            throw std::runtime_error("CREATE expects TABLE or DATABASE");
+        }
+    } else {
+        throw std::runtime_error("CREATE expects TABLE or DATABASE");
+    }
+
     Token name = expect(Token::Type::Identifier);
     expect(Token::Type::LParen);
 
@@ -87,11 +107,13 @@ Stmt Parser::parse_create() {
         std::transform(col.type.begin(), col.type.end(), col.type.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
-        if (col.type == "varchar") {
-            expect(Token::Type::LParen);
-            Token sz = expect(Token::Type::Integer);
-            col.size = static_cast<int>(sz.int_val);
-            expect(Token::Type::RParen);
+        if (col.type == "varchar" || col.type == "char") {
+            if (m_lexer.peek().type == Token::Type::LParen) {
+                expect(Token::Type::LParen);
+                Token sz = expect(Token::Type::Integer);
+                col.size = static_cast<int>(sz.int_val);
+                expect(Token::Type::RParen);
+            }
         }
 
         // PRIMARY KEY
@@ -243,12 +265,31 @@ Stmt Parser::parse_delete() {
 }
 
 // ==========================================================
-// DROP TABLE name
+// DROP TABLE name / DROP DATABASE name
 // ==========================================================
 
 Stmt Parser::parse_drop() {
     expect(Token::Type::Keyword); // DROP
-    expect(Token::Type::Keyword); // TABLE
+    Token second = m_lexer.peek();
+    if (second.type == Token::Type::Keyword) {
+        std::string kw2 = second.text;
+        std::transform(kw2.begin(), kw2.end(), kw2.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (kw2 == "database") {
+            advance(); // consume DATABASE
+            Token name = expect(Token::Type::Identifier);
+            match(Token::Type::Semicolon);
+            return DropDatabaseStmt{name.text};
+        }
+        if (kw2 == "table") {
+            advance(); // consume TABLE
+        } else {
+            throw std::runtime_error("DROP expects TABLE or DATABASE");
+        }
+    } else {
+        throw std::runtime_error("DROP expects TABLE or DATABASE");
+    }
+
     Token table = expect(Token::Type::Identifier);
 
     DropTableStmt stmt;
@@ -259,16 +300,39 @@ Stmt Parser::parse_drop() {
 }
 
 // ==========================================================
-// SHOW TABLES
+// SHOW TABLES / SHOW DATABASES
 // ==========================================================
 
 Stmt Parser::parse_show() {
     expect(Token::Type::Keyword); // SHOW
-    expect(Token::Type::Keyword); // TABLES
+    Token second = m_lexer.peek();
+    if (second.type == Token::Type::Keyword) {
+        std::string kw2 = second.text;
+        std::transform(kw2.begin(), kw2.end(), kw2.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (kw2 == "databases") {
+            advance(); // consume DATABASES
+            match(Token::Type::Semicolon);
+            return ShowDatabasesStmt{};
+        }
+        if (kw2 == "tables") {
+            advance(); // consume TABLES
+            match(Token::Type::Semicolon);
+            return ShowTablesStmt{};
+        }
+    }
+    throw std::runtime_error("SHOW expects TABLES or DATABASES");
+}
 
-    ShowTablesStmt stmt;
+// ==========================================================
+// USE database_name
+// ==========================================================
+
+Stmt Parser::parse_use() {
+    expect(Token::Type::Keyword); // USE
+    Token name = expect(Token::Type::Identifier);
     match(Token::Type::Semicolon);
-    return stmt;
+    return UseStmt{name.text};
 }
 
 // ==========================================================

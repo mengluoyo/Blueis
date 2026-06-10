@@ -126,6 +126,9 @@ bool TcpServer::start() {
     Aof::instance().load("data/blueis.aof",
         [this](const std::string& cmd) { process_command(cmd, false); });
 
+    // 确保默认数据库存在（兼容旧 RDB 数据）
+    StorageEngine::instance().create_database("default");
+
     // 启动过期清理后台线程 (Phase 7)
     StorageEngine::instance().start_expire_loop();
 
@@ -252,6 +255,9 @@ void TcpServer::handle_client(SOCKET client_socket) {
     bool in_esc = false;    // 处于方向键编辑状态
     string esc_buf;         // 存储方向键字符
 
+    // 客户端当前所在的数据库（连接级状态）
+    std::string current_db;
+
     // MSG_PEEK 偷看首字节判断协议类型，100ms 超时
     int timeout = 100;
     setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO,
@@ -295,7 +301,7 @@ void TcpServer::handle_client(SOCKET client_socket) {
                 raw += cmd.tokens[i];
             }
 
-            std::string response = process_command(raw, true);
+            std::string response = process_command(raw, true, &current_db);
             RespWriter resp_writer;
             std::string resp_data = resp_writer.to_resp(response);
             send(client_socket, resp_data.c_str(),
@@ -396,7 +402,7 @@ void TcpServer::handle_client(SOCKET client_socket) {
 
                 if(sql_buf == "exit"){
                     // 自动执行操作保存
-                    process_command("save", false);
+                    process_command("save", false, &current_db);
                     string bye = "bye";
                     send(client_socket, bye.c_str(), bye.size(), 0);
                     closesocket(client_socket);
@@ -404,7 +410,7 @@ void TcpServer::handle_client(SOCKET client_socket) {
                 
                 if (!sql_buf.empty()) {
                     // cout << "command: " << sql_buf << "sizes: " << sql_buf.size() << endl;
-                    std::string response = process_command(sql_buf, true);
+                    std::string response = process_command(sql_buf, true, &current_db);
                     response += "\r\n";
                     send(client_socket, response.c_str(),
                          static_cast<int>(response.size()), 0);
@@ -446,7 +452,7 @@ void TcpServer::handle_client(SOCKET client_socket) {
 // 命令处理
 // ============================================================
 
-std::string TcpServer::process_command(const std::string& raw, bool record_aof) {
+std::string TcpServer::process_command(const std::string& raw, bool record_aof, std::string* current_db) {
     ProtocolParser parser;
     Command cmd = parser.parse(raw);
 
@@ -467,9 +473,58 @@ std::string TcpServer::process_command(const std::string& raw, bool record_aof) 
         return "+OK";
     }
 
+    // USE 命令：切换客户端当前数据库（不经过 execute_sql）
+    if (cmd.type == CommandType::SQL && name == "use") {
+        if (cmd.tokens.size() >= 2) {
+            if (!StorageEngine::instance().use_database(cmd.tokens[1])) {
+                return "-ERR Unknown database '" + cmd.tokens[1] + "'";
+            }
+            *current_db = cmd.tokens[1];
+            return "+OK";
+        }
+        return "-ERR USE requires database name";
+    }
+
+    // SHOW DATABASES：不需要先选库，直接执行
+    if (cmd.type == CommandType::SQL && name == "show" &&
+        cmd.tokens.size() >= 2 && cmd.tokens[1] == "databases") {
+        auto dbs = StorageEngine::instance().show_databases();
+        if (dbs.empty()) return "(empty)";
+        std::ostringstream oss;
+        for (size_t i = 0; i < dbs.size(); ++i) {
+            if (i > 0) oss << "\r\n";
+            oss << dbs[i];
+        }
+        return oss.str();
+    }
+
+    // CREATE DATABASE：不需要先选库，直接执行
+    if (cmd.type == CommandType::SQL && name == "create" &&
+        cmd.tokens.size() >= 3 && cmd.tokens[1] == "database") {
+        StorageEngine::instance().create_database(cmd.tokens[2]);
+        return "+OK";
+    }
+
+    // DROP DATABASE：不需要先选库，直接执行
+    if (cmd.type == CommandType::SQL && name == "drop" &&
+        cmd.tokens.size() >= 3 && cmd.tokens[1] == "database") {
+        StorageEngine::instance().drop_database(cmd.tokens[2]);
+        // 如果删除的是当前库，清空选择
+        if (current_db && *current_db == cmd.tokens[2]) {
+            current_db->clear();
+        }
+        return "+OK";
+    }
+
     std::string result;
     if (cmd.type == CommandType::SQL) {
-        result = execute_sql(cmd);
+        // 必须先选择数据库才能执行 SQL
+        if (!current_db || current_db->empty()) {
+            return "-ERR No database selected. Use 'SHOW DATABASES' to list, then 'USE dbname' to select.";
+        }
+        // 切换到当前数据库上下文
+        StorageEngine::instance().use_database(*current_db);
+        result = execute_sql(cmd, current_db);
     } else {
         result = execute_redis(cmd);
     }
@@ -700,7 +755,7 @@ std::string TcpServer::execute_redis(const Command& cmd) {
 // SQL 命令（Phase 2 预留）
 // ============================================================
 
-std::string TcpServer::execute_sql(const Command& cmd) {
+std::string TcpServer::execute_sql(const Command& cmd, std::string* current_db) {
     try {
         sql::Lexer lexer(cmd.raw);
         sql::Parser parser(lexer);

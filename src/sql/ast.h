@@ -81,6 +81,21 @@ struct DropTableStmt {
 struct ShowTablesStmt {
 };
 
+struct CreateDatabaseStmt {
+    std::string name;
+};
+
+struct DropDatabaseStmt {
+    std::string name;
+};
+
+struct ShowDatabasesStmt {
+};
+
+struct UseStmt {
+    std::string name;
+};
+
 using Stmt = std::variant<
     CreateTableStmt,
     InsertStmt,
@@ -88,7 +103,11 @@ using Stmt = std::variant<
     UpdateStmt,
     DeleteStmt,
     DropTableStmt,
-    ShowTablesStmt
+    ShowTablesStmt,
+    CreateDatabaseStmt,
+    DropDatabaseStmt,
+    ShowDatabasesStmt,
+    UseStmt
 >;
 
 } // namespace sql
